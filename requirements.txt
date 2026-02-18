@@ -1,15 +1,5 @@
-brotlicffi @ file:///home/task_176496124915471/conda-bld/brotlicffi_1764961305283/work
-certifi @ file:///home/task_176765916309757/croot/certifi_1767659186135/work/certifi
-cffi @ file:///home/task_176183212682869/conda-bld/cffi_1761832772612/work
-charset-normalizer @ file:///home/task_176174482277165/conda-bld/charset-normalizer_1761744835261/work
-idna @ file:///work/buildout/croot/idna_1762546508632/work
-packaging @ file:///home/task_176104874909647/conda-bld/packaging_1761049078203/work
-pdf2image==1.17.0
-pillow==12.1.1
-pycparser @ file:///tmp/build/80754af9/pycparser_1636541352034/work
-pypdf==6.7.0
-PySocks @ file:///home/task_176175231270627/conda-bld/pysocks_1761753008896/work
-requests @ file:///home/task_176235918762166/conda-bld/requests_1762359593339/work
-setuptools==80.10.2
-urllib3 @ file:///home/task_176781021564054/croot/urllib3_1767810264481/work
-wheel==0.46.3
+pypdf>=6.7.0
+pdf2image>=1.17.0
+Pillow>=12.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0

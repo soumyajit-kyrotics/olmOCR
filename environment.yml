@@ -1,0 +1,9 @@
+name: olmocr
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - poppler
+  - pip
+  - pip:
+      - -r requirements.txt

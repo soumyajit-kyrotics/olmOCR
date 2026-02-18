@@ -4,6 +4,9 @@ pipeline.py — Pipeline orchestration for processing PDFs page by page.
 Ties together all modules (anchor, render, prompt, api) to process
 entire PDF documents through the OLMoCR-style pipeline.
 
+Includes cross-page sentence merging to preserve sentences that
+span page boundaries.
+
 Pages are processed concurrently using a thread pool for faster throughput.
 
 For each page:
@@ -16,6 +19,7 @@ For each page:
 
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pypdf import PdfReader
@@ -24,6 +28,42 @@ from .anchor import get_anchor_text
 from .render import render_pdf_to_base64png
 from .prompt import build_prompt
 from .api import call_gpt4o
+
+
+def _merge_page_boundaries(page_texts: list) -> str:
+    """
+    Merge page texts, joining with a space (instead of paragraph break)
+    when a sentence spans across a page boundary.
+
+    Detection heuristic:
+      - Page N ends WITHOUT terminal punctuation (., ?, !, :, ")
+      - Page N+1 starts with a lowercase letter or continuation pattern
+    If both conditions are met, the pages are joined with ' ' instead of '\n\n'.
+    """
+    if not page_texts:
+        return ""
+    if len(page_texts) == 1:
+        return page_texts[0]
+
+    # Punctuation that indicates a sentence/paragraph has ended
+    terminal_punct = re.compile(r'[.?!:"\u201d]\s*$')
+    # Pattern indicating the next page continues a sentence
+    continuation_start = re.compile(r'^[a-z]')
+
+    merged = page_texts[0]
+    for i in range(1, len(page_texts)):
+        prev_text = page_texts[i - 1].rstrip()
+        next_text = page_texts[i].lstrip()
+
+        ends_mid_sentence = not terminal_punct.search(prev_text)
+        starts_continuation = continuation_start.match(next_text)
+
+        if ends_mid_sentence and starts_continuation:
+            merged += " " + page_texts[i]
+        else:
+            merged += "\n\n" + page_texts[i]
+
+    return merged
 
 
 def process_page(pdf_path: str, page_num: int, api_key: str, max_dim: int = 2048) -> dict:
@@ -128,10 +168,11 @@ def process_pdf(
     with open(combined_json_path, "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
 
-    # Save combined plain text (all natural_text joined with double newlines)
+    # Merge page boundaries where sentences span across pages, then save
+    merged_text = _merge_page_boundaries(all_texts)
     combined_text_path = os.path.join(output_dir, f"{pdf_name}_linearized.txt")
     with open(combined_text_path, "w", encoding="utf-8") as f:
-        f.write("\n\n".join(all_texts))
+        f.write(merged_text)
 
     print("-" * 60)
     print(f"Done! {num_pages} pages processed.")
