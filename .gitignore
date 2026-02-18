@@ -12,6 +12,7 @@ build/
 output/
 images/
 train.jsonl
+synth_output/
 
 # PDF data (large files)
 data/
