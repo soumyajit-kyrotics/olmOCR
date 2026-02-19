@@ -51,6 +51,7 @@ def _call_api(
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
+        # "options": {"num_ctx": 2048},  # Force reduced context for Ollama to prevent OOM
     }
     max_retries = 3
     for attempt in range(max_retries):
