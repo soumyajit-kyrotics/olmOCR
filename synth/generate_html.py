@@ -1,7 +1,7 @@
 """
-generate_html.py — Convert PDF pages to faithful HTML using Claude Sonnet.
+generate_html.py — Convert PDF pages to faithful HTML using Qwen 2.5 VL 7B.
 
-Uses Claude Sonnet via OpenRouter to:
+Uses Qwen 2.5 VL 7B via OpenRouter to:
   1. Analyze the layout of a PDF page (columns, tables, math, images)
   2. Generate clean semantic HTML that faithfully reproduces the page
 
@@ -26,15 +26,15 @@ from src.render import render_pdf_to_base64png
 
 
 # ---------------------------------------------------------------------------
-# Claude Sonnet via OpenRouter
+# Qwen 2.5 VL 7B via OpenRouter
 # ---------------------------------------------------------------------------
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "anthropic/claude-sonnet-4.5"
+MODEL = "qwen/qwen-2.5-vl-7b-instruct"
 
 
 def _call_claude(api_key: str, messages: list, max_tokens: int = 16000, temperature: float = 0.2) -> str:
-    """Send a request to Claude Sonnet via OpenRouter and return the text response."""
+    """Send a request to Qwen 2.5 VL 7B via OpenRouter and return the text response."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -98,6 +98,63 @@ def _generate_html(api_key: str, image_base64: str, analysis_text: str, width: i
     Ask Claude to produce semantic HTML that reproduces the page.
     Returns the extracted HTML string, or None if extraction fails.
     """
+    a4_height = round(width * 1.414)
+
+    html_template = (
+        "<!DOCTYPE html>\n"
+        "<html lang=\"en\">\n"
+        "<head>\n"
+        "    <meta charset=\"UTF-8\">\n"
+        "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        "    <title>PAGE TITLE HERE</title>\n"
+        "    <style>\n"
+        f"        body {{\n"
+        f"            width: {width}px;\n"
+        f"            min-height: {a4_height}px;\n"
+        "            overflow: visible;\n"
+        "            box-sizing: border-box;\n"
+        "            font-family: 'Times New Roman', Georgia, serif;\n"
+        "            font-size: 18pt;\n"
+        "            line-height: 1.5;\n"
+        "            padding: 80px 100px;\n"
+        "            margin: 0;\n"
+        "        }\n"
+        "        header { text-align: center; margin-bottom: 2em; position: relative; }\n"
+        "        .page-number { position: absolute; left: 0; top: 0; font-size: 20pt; font-weight: bold; }\n"
+        "        .header-text { font-size: 18pt; font-weight: bold; letter-spacing: 0.1em; }\n"
+        "        .page-layout { display: flex; gap: 30px; }\n"
+        "        aside { flex: 0 0 180px; font-size: 16pt; line-height: 1.4; padding-right: 15px; }\n"
+        "        .main-col { flex: 1; }\n"
+        "        .case-name { font-style: italic; margin-bottom: 1em; }\n"
+        "        .judge-name { font-style: italic; margin-top: 1.5em; }\n"
+        "        p { margin: 1.3em 0; text-align: justify; text-indent: 2em; }\n"
+        "        p.no-indent { text-indent: 0; }\n"
+        "        .italic { font-style: italic; }\n"
+        "        .appeal-heading { text-align: center; margin: 1.5em 0; font-size: 18pt; }\n"
+        "        .counsel { margin: 1.2em 0; text-indent: 0; }\n"
+        "        .date { margin: 1.2em 0; font-weight: bold; }\n"
+        "        .conclusion { text-align: center; font-style: italic; margin: 2em 0; }\n"
+        "    </style>\n"
+        "</head>\n"
+        "<body>\n"
+        "    <header>\n"
+        "        <div class=\"page-number\">PAGE_NUM</div>\n"
+        "        <div class=\"header-text\">HEADER TEXT</div>\n"
+        "    </header>\n"
+        "    <div class=\"page-layout\">\n"
+        "        <aside>\n"
+        "            <div style=\"margin-bottom: 1.5em;\">YEAR</div>\n"
+        "            <div class=\"case-name\">Party1<br>v.<br>Party2</div>\n"
+        "            <div class=\"judge-name\">Judge Name J.</div>\n"
+        "        </aside>\n"
+        "        <div class=\"main-col\">\n"
+        "            <!-- MAIN CONTENT PARAGRAPHS HERE -->\n"
+        "        </div>\n"
+        "    </div>\n"
+        "</body>\n"
+        "</html>"
+    )
+
     messages = [
         {
             "role": "user",
@@ -109,46 +166,39 @@ def _generate_html(api_key: str, image_base64: str, analysis_text: str, width: i
                 {
                     "type": "text",
                     "text": (
-                        "Your goal is to create HTML that, when rendered at the exact page dimensions, "
-                        "is VISUALLY INDISTINGUISHABLE from the original PDF page. "
-                        "The rendered HTML screenshot should look like a photocopy of the original.\n\n"
-                        f"Here's my analysis of the document structure:\n\n{analysis_text}\n\n"
-                        "Requirements:\n\n"
-                        "--- PAGE DIMENSIONS ---\n"
-                        f"1. This page is exactly {width}px wide. The viewport has A4 aspect ratio "
-                        f"(height = {round(width * 1.414)}px). Your HTML body MUST use: "
-                        f"width: {width}px; min-height: {round(width * 1.414)}px; "
-                        "overflow: hidden; box-sizing: border-box; "
-                        "font-family: Times New Roman, Georgia, serif; font-size: 14pt; line-height: 1.5;\n\n"
-                        "--- VISUAL FIDELITY (HIGHEST PRIORITY) ---\n"
-                        "2. MARGINS: Carefully estimate the margins of the original page. "
-                        "Set body padding to replicate the exact same whitespace around the text block. "
-                        "Typical book pages have ~60-80px padding on each side. The text block width "
-                        "and position must match the original so line breaks occur at the same points.\n"
-                        "3. TYPOGRAPHY: Match the original font sizes. This document appears to use LARGE print relative to the page size. "
-                        "Use font-size: 18pt and line-height: 1.5. "
-                        "The goal is matching the text density — same number of lines per paragraph.\n"
-                        "Headings should be proportionally larger. The goal is matching the text density — same number of lines per paragraph.\n"
-                        "4. SPACING AND PAGE FILLING: The content MUST fill the page vertically similar to "
-                        "the original. If the original has text near the bottom of the page, your HTML must too. "
-                        "Use generous line-height (1.5-1.8), paragraph margins (1.2em-1.5em), and padding "
-                        "to spread content vertically. A paragraph at the bottom of the original page should "
-                        "appear at roughly the same vertical position in the HTML.\n\n"
-                        "--- SEMANTIC STRUCTURE ---\n"
-                        "5. Use appropriate HTML tags: h1-h6 for headings, p for paragraphs, etc.\n"
-                        "6. Page numbers and running headers/footers MUST be inside <header> or <footer> tags.\n"
-                        "7. Images: use <div class='image'> with grey background and black outline, preserving "
-                        "original size and position. Include data-description, data-x, data-y, data-width, "
-                        "data-height attributes.\n"
-                        "8. Math: use \\[ \\] or \\( \\) delimiters for LaTeX.\n\n"
-                        "--- LAYOUT ---\n"
-                        "9. COLUMNS: If the document has multi-column layout, preserve the exact same "
-                        "number of columns using CSS flexbox or grid.\n"
-                        "10. MARGIN NOTES: Any margin notes, side notes, or marginal annotations MUST be "
-                        "wrapped in <aside> tags. Use a CSS flexbox layout: main content takes ~75-80%% width, "
-                        "aside column takes ~20-25%% width. Do NOT use position:absolute — it causes overlap. "
-                        "Example: .page-layout { display: flex; } .main-col { flex: 3; } aside { flex: 1; }\n\n"
-                        "Enclose your HTML in a ```html code block."
+                        "Create HTML that **exactly reproduces** this PDF page. "
+                        "The rendered HTML must be VISUALLY INDISTINGUISHABLE from the original.\n\n"
+                        f"Layout analysis:\n{analysis_text}\n\n"
+                        "=== MANDATORY RULES ===\n\n"
+                        "1. You MUST follow the EXACT HTML template below. "
+                        "Do NOT deviate from this structure. Fill in the content from the image.\n\n"
+                        f"```html\n{html_template}\n```\n\n"
+                        "2. STRICT BANS — the following will BREAK rendering:\n"
+                        "   - NO inline style= attributes (use CSS classes only)\n"
+                        "   - NO position: fixed or position: absolute\n"
+                        "   - NO <h1> tags for headers (use <div class=\"header-text\"> inside <header>)\n\n"
+                        "3. HEADER FORMAT: Use the <header> structure exactly as shown:\n"
+                        "   - <div class=\"page-number\"> for the page number (left-aligned)\n"
+                        "   - <div class=\"header-text\"> for the running header text (centered)\n\n"
+                        "4. ASIDE (margin notes): The aside column is for case citations that "
+                        "appear in the margin of the original page. Structure the aside as:\n"
+                        "   - Year in its own <div>\n"
+                        "   - Case name in <div class=\"case-name\"> with <br> between party names\n"
+                        "   - Judge name in <div class=\"judge-name\">\n"
+                        "   The aside MUST use flex: 0 0 180px (fixed 180px width). "
+                        "If no margin notes exist on this page, omit the <aside> entirely and "
+                        "remove the .page-layout wrapper.\n\n"
+                        "5. CSS CLASSES to use for different content types:\n"
+                        "   - Normal paragraphs: <p> (auto text-indent: 2em)\n"
+                        "   - First paragraph or non-indented: <p class=\"no-indent\">\n"
+                        "   - Italic text like \"Held\": <span class=\"italic\">Held</span>\n"
+                        "   - Appeal headings: <p class=\"appeal-heading no-indent\">\n"
+                        "   - Counsel names: <p class=\"counsel no-indent\">\n"
+                        "   - Dates: <p class=\"date no-indent\">\n"
+                        "   - \"Appeal dismissed\" type conclusions: <p class=\"conclusion\">\n\n"
+                        "6. TEXT ACCURACY: Copy ALL text from the image exactly. "
+                        "Do not summarize or skip any paragraphs. Every word must be present.\n\n"
+                        "Enclose your final HTML in a ```html code block."
                     ),
                 },
             ],
@@ -197,7 +247,7 @@ def _inject_viewport_css(html: str, width: int, height: int) -> str:
         f"    margin: 0 auto !important;\n"
         f"    \n"
         f"    min-height: {a4_height}px !important;\n"
-        f"    overflow: hidden !important;\n"
+        f"    overflow: visible !important;\n"
         f"    box-sizing: border-box !important;\n"
         f"    \n"
         f"    /* 3. Vertical padding only (horizontal handled by width) */\n"
@@ -248,11 +298,11 @@ def process_page(pdf_path: str, page_num: int, api_key: str, max_dim: int = 2048
     width, height = _get_png_dimensions(png_bytes)
     print(f"  [Page {page_num}] Image size: {width}x{height}")
 
-    print(f"  [Page {page_num}] Analyzing layout with Claude Sonnet...")
+    print(f"  [Page {page_num}] Analyzing layout with Qwen 2.5 VL 7B...")
     analysis = _analyze_layout(api_key, image_base64)
     print(f"  [Page {page_num}] Layout analysis done ({len(analysis)} chars)")
 
-    print(f"  [Page {page_num}] Generating HTML with Claude Sonnet...")
+    print(f"  [Page {page_num}] Generating HTML with Qwen 2.5 VL 7B...")
     html = _generate_html(api_key, image_base64, analysis, width, height)
 
     if html is None:
@@ -324,7 +374,7 @@ def process_pdf(pdf_path: str, api_key: str, output_dir: str, max_dim: int = 204
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate faithful HTML from PDF pages using Claude Sonnet (via OpenRouter)"
+        description="Generate faithful HTML from PDF pages using Qwen 2.5 VL 7B (via OpenRouter)"
     )
     parser.add_argument("--pdf-dir", required=True, help="Directory containing PDF files")
     parser.add_argument("--output-dir", default="synth_output", help="Output directory")

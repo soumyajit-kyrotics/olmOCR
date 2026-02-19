@@ -40,7 +40,7 @@ async def render_html_to_png(html_path: str, png_path: str, width: int = 800, he
         await page.goto(file_url, wait_until="networkidle")
 
         # Take a full-page screenshot
-        await page.screenshot(path=png_path, full_page=False)
+        await page.screenshot(path=png_path, full_page=True)
         await browser.close()
 
 
@@ -116,7 +116,7 @@ async def render_directory(html_dir: str, output_dir: str, fmt: str = "png") -> 
             await page.goto(file_url, wait_until="networkidle")
 
             if fmt == "png":
-                await page.screenshot(path=out_path, full_page=False)
+                await page.screenshot(path=out_path, full_page=True)
             else:
                 await page.pdf(
                     path=out_path,

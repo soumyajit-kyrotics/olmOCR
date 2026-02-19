@@ -2,12 +2,15 @@
 prompt.py — OLMoCR prompt construction with YAML response format.
 
 Contains:
-  - build_prompt(): the GPT-4o prompt adapted from OLMoCR's approach,
+  - build_prompt(): the prompt adapted from OLMoCR's approach,
     with YAML response format instructions instead of JSON schema.
 
     The chain-of-thought fields (language, rotation, table, diagram) are
     ordered BEFORE natural_text in the YAML template — this ordering
     ensures the model reasons about the page before producing text.
+
+    Anchor text is wrapped in <|anchor_start|> / <|anchor_end|> tags
+    that are registered as special tokens in the tokenizer.
 
 Reference: https://github.com/allenai/olmocr/blob/main/olmocr/prompts/prompts.py
 """
@@ -17,7 +20,7 @@ def build_prompt(anchor_text: str) -> str:
     """
     Build the OLMoCR-style prompt with YAML response format.
 
-    This prompt instructs GPT-4o to:
+    This prompt instructs the model to:
       - Read the page naturally, preserving reading order
       - Convert equations to LaTeX, tables to markdown
       - Remove headers/footers but keep references and footnotes
@@ -27,7 +30,7 @@ def build_prompt(anchor_text: str) -> str:
       - Not hallucinate
 
     The anchor text (extracted by anchor.py) provides spatial layout context
-    wrapped in RAW_TEXT_START / RAW_TEXT_END markers.
+    wrapped in <|anchor_start|> / <|anchor_end|> markers.
 
     Args:
         anchor_text: formatted anchor text from get_anchor_text()
@@ -63,6 +66,7 @@ def build_prompt(anchor_text: str) -> str:
         "is_diagram: <true if majority of page content is a visual diagram>\n"
         "natural_text: |\n"
         "  <the extracted plain text, indented by 2 spaces>\n\n"
-        f"RAW_TEXT_START\n{anchor_text}\nRAW_TEXT_END"
+        f"<|anchor_start|>\n{anchor_text}\n<|anchor_end|>"
     )
+
 
