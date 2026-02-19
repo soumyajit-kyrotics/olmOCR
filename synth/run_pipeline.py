@@ -2,12 +2,18 @@
 run_pipeline.py — End-to-end synthetic data pipeline orchestrator.
 
 Runs all 3 steps of the OLMoCR v2 synthetic data pipeline:
-  1. generate_html — PDF pages → faithful HTML via Claude Sonnet
+  1. generate_html — PDF pages → faithful HTML via VLM
   2. render_html  — HTML → PNG/PDF screenshots via Playwright
   3. generate_tests — HTML → unit tests JSONL
 
 Usage:
-  python -m synth.run_pipeline --pdf-dir data/ --output-dir synth_output/ --max-pages 5
+  # Via OpenRouter:
+  python -m synth.run_pipeline --pdf-dir data/ --output-dir synth_output/
+
+  # Via local vLLM:
+  python -m synth.run_pipeline --pdf-dir data/ \\
+    --api-url http://localhost:8000/v1/chat/completions \\
+    --model Qwen/Qwen2.5-VL-32B-Instruct-AWQ
 """
 
 import argparse
@@ -32,16 +38,25 @@ def main():
     parser.add_argument("--max-dim", type=int, default=2048, help="Max image dimension")
     parser.add_argument("--render-format", choices=["png", "pdf", "both"], default="png",
                         help="Rendering output format")
-    parser.add_argument("--api-key", help="OpenRouter API key (or set OPENROUTER_API_KEY)")
+    parser.add_argument("--api-key", help="API key (or set OPENROUTER_API_KEY). Use 'none' for local vLLM.")
+    parser.add_argument("--api-url", default="https://openrouter.ai/api/v1/chat/completions",
+                        help="API endpoint URL (default: OpenRouter)")
+    parser.add_argument("--model", default="qwen/qwen-2.5-vl-7b-instruct",
+                        help="Model name (default: qwen/qwen-2.5-vl-7b-instruct)")
     parser.add_argument("--skip-render", action="store_true", help="Skip HTML rendering step")
     parser.add_argument("--skip-tests", action="store_true", help="Skip test extraction step")
     args = parser.parse_args()
 
     load_dotenv()
-    api_key = args.api_key or os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
+    api_key = args.api_key or os.getenv("OPENROUTER_API_KEY") or ""
+
+    # For local vLLM, no API key is needed
+    is_local = "localhost" in args.api_url or "127.0.0.1" in args.api_url
+    if not api_key and not is_local:
         print("Error: No API key. Use --api-key or set OPENROUTER_API_KEY in .env")
         sys.exit(1)
+    if is_local and not api_key:
+        api_key = "none"
 
     os.makedirs(args.output_dir, exist_ok=True)
     html_dir = os.path.join(args.output_dir, "html")
@@ -72,7 +87,10 @@ def main():
         if total_pages >= args.max_pages:
             break
         print(f"\nProcessing: {pdf_path}")
-        results = process_pdf(pdf_path, api_key, args.output_dir, args.max_dim)
+        results = process_pdf(
+            pdf_path, api_key, args.output_dir, args.max_dim,
+            api_url=args.api_url, model=args.model,
+        )
         total_pages += len(results)
 
     t1 = time.time()

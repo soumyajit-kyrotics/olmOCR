@@ -1,9 +1,9 @@
 """
-generate_html.py — Convert PDF pages to faithful HTML using Qwen 2.5 VL 7B.
+generate_html.py — Convert PDF pages to faithful HTML using a Vision-Language Model.
 
-Uses Qwen 2.5 VL 7B via OpenRouter to:
-  1. Analyze the layout of a PDF page (columns, tables, math, images)
-  2. Generate clean semantic HTML that faithfully reproduces the page
+Supports:
+  - OpenRouter API (default): uses Qwen 2.5 VL via cloud
+  - Local vLLM server: for running quantized models locally
 
 This is the first step of OLMoCR v2's synthetic data pipeline.
 The generated HTML becomes ground truth for extracting unit tests.
@@ -26,40 +26,57 @@ from src.render import render_pdf_to_base64png
 
 
 # ---------------------------------------------------------------------------
-# Qwen 2.5 VL 7B via OpenRouter
+# API defaults (overridable via CLI)
 # ---------------------------------------------------------------------------
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "qwen/qwen-2.5-vl-7b-instruct"
+DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_MODEL = "qwen/qwen-2.5-vl-7b-instruct"
 
 
-def _call_claude(api_key: str, messages: list, max_tokens: int = 16000, temperature: float = 0.2) -> str:
-    """Send a request to Qwen 2.5 VL 7B via OpenRouter and return the text response."""
+def _call_api(
+    api_key: str,
+    messages: list,
+    api_url: str = DEFAULT_API_URL,
+    model: str = DEFAULT_MODEL,
+    max_tokens: int = 16000,
+    temperature: float = 0.2,
+) -> str:
+    """Send a request to the VLM API and return the text response."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": MODEL,
+        "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=180)
-    if response.status_code != 200:
+    max_retries = 3
+    for attempt in range(max_retries):
+        response = requests.post(api_url, headers=headers, json=payload, timeout=300)
+        if response.status_code == 200:
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+        # Retry on transient server errors
+        if response.status_code in (500, 502, 503, 504) and attempt < max_retries - 1:
+            wait = 2 ** attempt * 5  # 5s, 10s, 20s
+            print(f"  API Error {response.status_code}, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+            import time
+            time.sleep(wait)
+            continue
         print(f"API Error {response.status_code}: {response.text[:500]}")
         response.raise_for_status()
-    result = response.json()
-    return result["choices"][0]["message"]["content"]
+    raise RuntimeError("Max retries exceeded")
 
 
 # ---------------------------------------------------------------------------
 # Step 1: Layout Analysis
 # ---------------------------------------------------------------------------
 
-def _analyze_layout(api_key: str, image_base64: str) -> str:
+def _analyze_layout(api_key: str, image_base64: str, api_url: str = DEFAULT_API_URL, model: str = DEFAULT_MODEL) -> str:
     """
-    Ask Claude to analyze the page layout before generating HTML.
+    Analyze the page layout before generating HTML.
     Returns a text description of the layout structure.
     """
     messages = [
@@ -86,16 +103,19 @@ def _analyze_layout(api_key: str, image_base64: str) -> str:
             ],
         }
     ]
-    return _call_claude(api_key, messages, max_tokens=2000)
+    return _call_api(api_key, messages, api_url=api_url, model=model, max_tokens=2000)
 
 
 # ---------------------------------------------------------------------------
 # Step 2: HTML Generation
 # ---------------------------------------------------------------------------
 
-def _generate_html(api_key: str, image_base64: str, analysis_text: str, width: int, height: int) -> str | None:
+def _generate_html(
+    api_key: str, image_base64: str, analysis_text: str, width: int, height: int,
+    api_url: str = DEFAULT_API_URL, model: str = DEFAULT_MODEL,
+) -> str | None:
     """
-    Ask Claude to produce semantic HTML that reproduces the page.
+    Produce semantic HTML that reproduces the page.
     Returns the extracted HTML string, or None if extraction fails.
     """
     a4_height = round(width * 1.414)
@@ -204,7 +224,7 @@ def _generate_html(api_key: str, image_base64: str, analysis_text: str, width: i
             ],
         }
     ]
-    response_text = _call_claude(api_key, messages, max_tokens=16000)
+    response_text = _call_api(api_key, messages, api_url=api_url, model=model, max_tokens=16000)
     html = _extract_html_block(response_text)
     if html:
         html = _inject_viewport_css(html, width, height)
@@ -280,7 +300,10 @@ def _inject_viewport_css(html: str, width: int, height: int) -> str:
 # Per-page Processing
 # ---------------------------------------------------------------------------
 
-def process_page(pdf_path: str, page_num: int, api_key: str, max_dim: int = 2048) -> dict | None:
+def process_page(
+    pdf_path: str, page_num: int, api_key: str, max_dim: int = 2048,
+    api_url: str = DEFAULT_API_URL, model: str = DEFAULT_MODEL,
+) -> dict | None:
     """
     Process a single PDF page through the synthetic data pipeline.
 
@@ -298,12 +321,12 @@ def process_page(pdf_path: str, page_num: int, api_key: str, max_dim: int = 2048
     width, height = _get_png_dimensions(png_bytes)
     print(f"  [Page {page_num}] Image size: {width}x{height}")
 
-    print(f"  [Page {page_num}] Analyzing layout with Qwen 2.5 VL 7B...")
-    analysis = _analyze_layout(api_key, image_base64)
+    print(f"  [Page {page_num}] Analyzing layout...")
+    analysis = _analyze_layout(api_key, image_base64, api_url=api_url, model=model)
     print(f"  [Page {page_num}] Layout analysis done ({len(analysis)} chars)")
 
-    print(f"  [Page {page_num}] Generating HTML with Qwen 2.5 VL 7B...")
-    html = _generate_html(api_key, image_base64, analysis, width, height)
+    print(f"  [Page {page_num}] Generating HTML...")
+    html = _generate_html(api_key, image_base64, analysis, width, height, api_url=api_url, model=model)
 
     if html is None:
         print(f"  [Page {page_num}] WARNING: Failed to extract HTML from response")
@@ -334,7 +357,10 @@ def _get_png_dimensions(png_bytes: bytes) -> tuple:
 # Batch Processing
 # ---------------------------------------------------------------------------
 
-def process_pdf(pdf_path: str, api_key: str, output_dir: str, max_dim: int = 2048) -> list:
+def process_pdf(
+    pdf_path: str, api_key: str, output_dir: str, max_dim: int = 2048,
+    api_url: str = DEFAULT_API_URL, model: str = DEFAULT_MODEL,
+) -> list:
     """Process all pages of a PDF and save generated HTML files."""
     from pypdf import PdfReader
 
@@ -347,7 +373,7 @@ def process_pdf(pdf_path: str, api_key: str, output_dir: str, max_dim: int = 204
 
     results = []
     for page_num in range(1, num_pages + 1):
-        result = process_page(pdf_path, page_num, api_key, max_dim)
+        result = process_page(pdf_path, page_num, api_key, max_dim, api_url=api_url, model=model)
         if result is None:
             continue
 
@@ -374,20 +400,39 @@ def process_pdf(pdf_path: str, api_key: str, output_dir: str, max_dim: int = 204
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate faithful HTML from PDF pages using Qwen 2.5 VL 7B (via OpenRouter)"
+        description="Generate faithful HTML from PDF pages using a Vision-Language Model",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  # Via OpenRouter (default):\n"
+            "  python -m synth.generate_html --pdf-dir data/\n\n"
+            "  # Via local vLLM server:\n"
+            "  python -m synth.generate_html --pdf-dir data/ \\\ \n"
+            "    --api-url http://localhost:8000/v1/chat/completions \\\ \n"
+            "    --model Qwen/Qwen2.5-VL-32B-Instruct-AWQ\n"
+        ),
     )
     parser.add_argument("--pdf-dir", required=True, help="Directory containing PDF files")
     parser.add_argument("--output-dir", default="synth_output", help="Output directory")
     parser.add_argument("--max-pages", type=int, default=50, help="Max pages to process across all PDFs")
     parser.add_argument("--max-dim", type=int, default=2048, help="Max image dimension in pixels")
-    parser.add_argument("--api-key", help="OpenRouter API key (or set OPENROUTER_API_KEY)")
+    parser.add_argument("--api-key", help="API key (or set OPENROUTER_API_KEY in .env). Use 'none' for local vLLM.")
+    parser.add_argument("--api-url", default=DEFAULT_API_URL,
+                        help=f"API endpoint URL (default: {DEFAULT_API_URL})")
+    parser.add_argument("--model", default=DEFAULT_MODEL,
+                        help=f"Model name (default: {DEFAULT_MODEL})")
     args = parser.parse_args()
 
     load_dotenv()
-    api_key = args.api_key or os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
+    api_key = args.api_key or os.getenv("OPENROUTER_API_KEY") or ""
+
+    # For local vLLM, no API key is needed
+    is_local = "localhost" in args.api_url or "127.0.0.1" in args.api_url
+    if not api_key and not is_local:
         print("Error: No API key. Use --api-key or set OPENROUTER_API_KEY in .env")
         sys.exit(1)
+    if is_local and not api_key:
+        api_key = "none"  # vLLM doesn't require auth
 
     # Collect PDF files
     pdf_files = sorted([
@@ -401,6 +446,8 @@ def main():
         sys.exit(1)
 
     print(f"Found {len(pdf_files)} PDF(s) in {args.pdf_dir}")
+    print(f"  API: {args.api_url}")
+    print(f"  Model: {args.model}")
     os.makedirs(args.output_dir, exist_ok=True)
 
     total_pages = 0
@@ -409,7 +456,10 @@ def main():
             break
 
         print(f"\nProcessing: {pdf_path}")
-        results = process_pdf(pdf_path, api_key, args.output_dir, args.max_dim)
+        results = process_pdf(
+            pdf_path, api_key, args.output_dir, args.max_dim,
+            api_url=args.api_url, model=args.model,
+        )
         total_pages += len(results)
 
         if total_pages >= args.max_pages:
