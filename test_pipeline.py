@@ -2,10 +2,17 @@
 import os
 import shutil
 import sys
+from dotenv import load_dotenv
 from synth.run_pipeline import main as run_pipeline_main
 from unittest.mock import patch
 
 def test_pipeline():
+    # Load environment variables
+    load_dotenv()
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not openrouter_key:
+        print("WARNING: OPENROUTER_API_KEY not found in .env file.")
+
     # Setup paths
     base_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(base_dir, "data")
@@ -39,9 +46,9 @@ def test_pipeline():
         "--output-dir", output_dir,
         "--max-pages", "2", 
         "--render-format", "png",
-        "--api-url", "http://localhost:11434/v1/chat/completions",
-        "--api-key", "ollama",
-        "--model", "qwen2.5vl:7b"
+        "--api-url", "https://openrouter.ai/api/v1/chat/completions",
+        "--api-key", openrouter_key,
+        "--model", "qwen/qwen3-vl-235b-a22b-thinking"
     ]
     
     print(f"Running pipeline with args: {test_args}")
