@@ -31,7 +31,7 @@ import torch
 from datasets import Dataset
 from transformers import (
     AutoProcessor,
-    Qwen2_5_VLForConditionalGeneration,
+    Qwen3_5_VLForConditionalGeneration,
     BitsAndBytesConfig,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -42,7 +42,7 @@ from trl import SFTConfig, SFTTrainer
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
+MODEL_ID = "Qwen/Qwen3.5-9B"
 
 # Special tokens for anchor text boundaries (must match prepare_sft_data.py)
 SPECIAL_TOKENS = ["<|anchor_start|>", "<|anchor_end|>"]
@@ -209,7 +209,7 @@ class Qwen2VLDataCollator:
 # ---------------------------------------------------------------------------
 
 def load_model_and_processor(qlora: bool = False):
-    """Load the Qwen2.5-VL model with optional 4-bit quantisation."""
+    """Load the Qwen3.5-9B model with optional 4-bit quantisation."""
 
     print(f"Loading model: {MODEL_ID}")
     print(f"  Mode: {'QLoRA (4-bit)' if qlora else 'LoRA (16-bit)'}")
@@ -232,7 +232,7 @@ def load_model_and_processor(qlora: bool = False):
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model = Qwen3_5_VLForConditionalGeneration.from_pretrained(
             MODEL_ID,
             quantization_config=bnb_config,
             torch_dtype=torch.bfloat16,
@@ -241,7 +241,7 @@ def load_model_and_processor(qlora: bool = False):
         )
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     else:
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model = Qwen3_5_VLForConditionalGeneration.from_pretrained(
             MODEL_ID,
             torch_dtype=torch.bfloat16,
             device_map="auto",
@@ -381,7 +381,7 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fine-tune Qwen2.5-VL-7B with LoRA/QLoRA for OCR",
+        description="Fine-tune Qwen3.5-9B with LoRA/QLoRA for OCR",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"

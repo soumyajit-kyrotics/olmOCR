@@ -17,10 +17,18 @@ Page images are saved as PNG files to an images directory, and referenced
 by file path in the training data (not embedded as base64).
 
 Usage:
+  # HTML only
   python prepare_sft_data.py --from-html synth_output/ --data-dir data/ -o train.jsonl
+
+  # HTML + YAML (recommended — combines both pipelines)
+  python prepare_sft_data.py --from-html synth_output/ --include-yaml -o train.jsonl
+
+  # YAML only (if generate_html was not run)
+  python prepare_sft_data.py --from-yaml synth_output/ --data-dir data/ -o train.jsonl
 """
 
 import argparse
+import base64
 import glob
 import json
 import os
@@ -32,6 +40,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 
 from src.anchor import get_anchor_text
+from src.render import render_pdf_to_base64png
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +340,137 @@ def from_html(synth_dir: str, data_dir: str, output_jsonl: str, images_dir: str)
 
 
 # ---------------------------------------------------------------------------
+# from_yaml mode: reads directly-generated YAML files
+# ---------------------------------------------------------------------------
+
+def from_yaml(synth_dir: str, data_dir: str, output_jsonl: str, images_dir: str,
+              append: bool = False):
+    """
+    Build SFT training data from generate_yaml.py outputs.
+
+    Reads YAML files from synth_dir/yaml/, renders the source PDF page to PNG
+    (since there is no pre-rendered image for yaml pages), and writes training
+    examples to output_jsonl in the same format as from_html().
+
+    Args:
+        synth_dir:     synth pipeline output directory (contains yaml/ subdir)
+        data_dir:      directory containing original PDFs
+        output_jsonl:  path to write (or append to) the training JSONL file
+        images_dir:    directory to save rendered page images
+        append:        if True, append to existing JSONL instead of overwriting
+    """
+    yaml_dir = os.path.join(synth_dir, "yaml")
+    if not os.path.isdir(yaml_dir):
+        print(f"WARNING: YAML directory not found: {yaml_dir} — skipping")
+        return 0
+
+    yaml_files = sorted(glob.glob(os.path.join(yaml_dir, "*.yaml")))
+    if not yaml_files:
+        print(f"WARNING: No YAML files found in {yaml_dir}")
+        return 0
+
+    print(f"Found {len(yaml_files)} YAML files in {yaml_dir}")
+    os.makedirs(images_dir, exist_ok=True)
+
+    count = 0
+    skipped = 0
+    mode = "a" if append else "w"
+    with open(output_jsonl, mode, encoding="utf-8") as out:
+        for yaml_path in yaml_files:
+            basename = os.path.basename(yaml_path)    # e.g. 2020~crr_510_e_page_5.yaml
+            stem     = os.path.splitext(basename)[0]  # e.g. 2020~crr_510_e_page_5
+
+            match = re.match(r"(.+)_page_(\d+)$", stem)
+            if not match:
+                print(f"  WARNING: Unexpected filename format: {basename}, skipping")
+                skipped += 1
+                continue
+
+            pdf_name = match.group(1)
+            page_num = int(match.group(2))
+
+            # Read the pre-generated YAML (this IS the assistant response)
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                yaml_response = f.read().strip()
+
+            if not yaml_response or "natural_text:" not in yaml_response:
+                print(f"  WARNING: Invalid/empty YAML in {basename}, skipping")
+                skipped += 1
+                continue
+
+            # Load JSON metadata to find source PDF
+            meta_path = os.path.join(yaml_dir, f"{stem}.json")
+            source_pdf = None
+            if os.path.exists(meta_path):
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                source_pdf = meta.get("source")
+
+            if not source_pdf:
+                # Fallback: search data_dir recursively
+                matches = glob.glob(
+                    os.path.join(data_dir, "**", f"{pdf_name}.pdf"), recursive=True
+                )
+                source_pdf = matches[0] if matches else None
+
+            if not source_pdf or not os.path.exists(source_pdf):
+                print(f"  WARNING: Source PDF not found for {basename}, skipping")
+                skipped += 1
+                continue
+
+            # Render the PDF page to PNG (1288px max edge)
+            dest_image = os.path.join(images_dir, f"{stem}.png")
+            if not os.path.exists(dest_image):
+                try:
+                    image_b64 = render_pdf_to_base64png(source_pdf, page_num, max_dim=1288)
+                    png_bytes  = base64.b64decode(image_b64)
+                    with open(dest_image, "wb") as f:
+                        f.write(png_bytes)
+                except Exception as e:
+                    print(f"  WARNING: Could not render {basename}: {e}, skipping")
+                    skipped += 1
+                    continue
+
+            # Build prompt (with anchor text if PDF is available)
+            try:
+                anchor_text = get_anchor_text(source_pdf, page_num)
+                prompt_text = (
+                    PROMPT_TEMPLATE + "\n\n"
+                    f"<|anchor_start|>\n{anchor_text}\n<|anchor_end|>"
+                )
+            except Exception:
+                prompt_text = PROMPT_TEMPLATE
+
+            example = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text",  "text": prompt_text},
+                            {"type": "image", "image": dest_image},
+                        ],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": yaml_response,
+                    },
+                ],
+                "metadata": {
+                    "source":           f"{pdf_name}.pdf",
+                    "page":             page_num,
+                    "yaml_source":      yaml_path,
+                    "generated_by":     "generate_yaml",
+                },
+            }
+            out.write(json.dumps(example, ensure_ascii=False) + "\n")
+            count += 1
+            print(f"  [{stem}] ✓ {len(yaml_response)} chars")
+
+    print(f"  Wrote {count} YAML-sourced training examples ({skipped} skipped)")
+    return count
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -339,15 +479,30 @@ def main():
         description="Prepare SFT training data from PDFs using OLMoCR-style extraction",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Example:\n"
-            "  python prepare_sft_data.py --from-html synth_output/ --data-dir data/ -o train.jsonl\n"
+            "Examples:\n"
+            "  # HTML only\n"
+            "  python prepare_sft_data.py --from-html synth_output/ -o train.jsonl\n\n"
+            "  # HTML + YAML (recommended)\n"
+            "  python prepare_sft_data.py --from-html synth_output/ --include-yaml -o train.jsonl\n\n"
+            "  # YAML only\n"
+            "  python prepare_sft_data.py --from-yaml synth_output/ -o train.jsonl\n"
         ),
     )
 
     parser.add_argument(
         "--from-html",
-        required=True,
+        default=None,
         help="Synth pipeline output directory containing html/ and rendered/ subdirs",
+    )
+    parser.add_argument(
+        "--from-yaml",
+        default=None,
+        help="Synth pipeline output directory containing yaml/ subdir (from generate_yaml.py)",
+    )
+    parser.add_argument(
+        "--include-yaml",
+        action="store_true",
+        help="When using --from-html, also include yaml/ pages from the same synth dir",
     )
     parser.add_argument(
         "--data-dir",
@@ -366,7 +521,33 @@ def main():
     )
     args = parser.parse_args()
 
-    from_html(args.from_html, args.data_dir, args.output, args.images_dir)
+    if not args.from_html and not args.from_yaml:
+        parser.error("At least one of --from-html or --from-yaml is required")
+
+    total = 0
+
+    # HTML sourced examples (writes fresh file)
+    if args.from_html:
+        from_html(args.from_html, args.data_dir, args.output, args.images_dir)
+        total_html = sum(1 for _ in open(args.output, encoding="utf-8"))
+        total += total_html
+        print(f"\nHTML examples written: {total_html}")
+
+    # YAML sourced examples (appends to same file)
+    yaml_dir_to_use = None
+    if args.include_yaml and args.from_html:
+        yaml_dir_to_use = args.from_html
+    elif args.from_yaml:
+        yaml_dir_to_use = args.from_yaml
+
+    if yaml_dir_to_use:
+        yaml_count = from_yaml(
+            yaml_dir_to_use, args.data_dir, args.output, args.images_dir,
+            append=bool(args.from_html),  # append if HTML already written
+        )
+        total += yaml_count
+
+    print(f"\nTotal training examples in {args.output}: {total}")
 
 
 if __name__ == "__main__":

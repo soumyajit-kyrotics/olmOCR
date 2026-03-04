@@ -222,6 +222,120 @@ def extract_order_tests(soup: BeautifulSoup, pdf_name: str, page: int, rng: rand
     return tests
 
 
+def extract_math_tests(soup: BeautifulSoup, pdf_name: str, page: int) -> list:
+    """
+    Extract math tests from LaTeX/MathJax/KaTeX content in the HTML.
+
+    Looks for:
+      - <math> elements (MathML)
+      - Elements with class 'MathJax' or 'katex'
+      - Inline LaTeX delimiters: \\( ... \\) or $ ... $
+      - Display LaTeX delimiters: \\[ ... \\] or $$ ... $$
+    """
+    tests = []
+
+    # Strategy 1: Look for <math> or MathJax/KaTeX elements
+    math_elements = soup.find_all(["math"])
+    math_elements += soup.find_all(class_=re.compile(r"MathJax|katex", re.IGNORECASE))
+
+    for i, elem in enumerate(math_elements):
+        latex_text = elem.get_text(strip=True)
+        if latex_text and len(latex_text) >= 3:
+            tests.append({
+                "id": f"{pdf_name}_p{page}_math_{uuid.uuid4().hex[:8]}",
+                "type": "math",
+                "pdf": f"{pdf_name}.pdf",
+                "page": page,
+                "latex": latex_text,
+            })
+
+    # Strategy 2: Look for inline LaTeX in text nodes
+    body = soup.find("body")
+    if body:
+        full_text = body.get_text()
+        # Match \( ... \) and \[ ... \]
+        latex_patterns = [
+            re.compile(r'\\\((.+?)\\\)', re.DOTALL),
+            re.compile(r'\\\[(.+?)\\\]', re.DOTALL),
+            re.compile(r'\$\$(.+?)\$\$', re.DOTALL),
+        ]
+        for pattern in latex_patterns:
+            for match in pattern.finditer(full_text):
+                latex = match.group(1).strip()
+                if latex and len(latex) >= 3:
+                    tests.append({
+                        "id": f"{pdf_name}_p{page}_math_{uuid.uuid4().hex[:8]}",
+                        "type": "math",
+                        "pdf": f"{pdf_name}.pdf",
+                        "page": page,
+                        "latex": latex,
+                    })
+
+    return tests
+
+
+def extract_formatting_tests(soup: BeautifulSoup, pdf_name: str, page: int, rng: random.Random) -> list:
+    """
+    Extract formatting tests that verify structural markers are preserved.
+
+    Tests that bold text, italic text, and heading structure survive OCR.
+    """
+    tests = []
+
+    # Bold text (<strong>, <b>)
+    bold_elements = soup.find_all(["strong", "b"])
+    for elem in bold_elements:
+        if elem.find_parent(["header", "footer", "aside"]):
+            continue
+        text = elem.get_text(strip=True)
+        if text and len(text) >= 3:
+            tests.append({
+                "id": f"{pdf_name}_p{page}_fmt_{uuid.uuid4().hex[:8]}",
+                "type": "formatting",
+                "pdf": f"{pdf_name}.pdf",
+                "page": page,
+                "text": text,
+                "format_type": "bold",
+            })
+
+    # Italic text (<em>, <i>) — sample up to 3
+    italic_elements = soup.find_all(["em", "i"])
+    italic_texts = []
+    for elem in italic_elements:
+        if elem.find_parent(["header", "footer", "aside"]):
+            continue
+        text = elem.get_text(strip=True)
+        if text and len(text) >= 5:
+            italic_texts.append(text)
+
+    for text in rng.sample(italic_texts, min(3, len(italic_texts))):
+        tests.append({
+            "id": f"{pdf_name}_p{page}_fmt_{uuid.uuid4().hex[:8]}",
+            "type": "formatting",
+            "pdf": f"{pdf_name}.pdf",
+            "page": page,
+            "text": text,
+            "format_type": "italic",
+        })
+
+    # Headings (h1-h6) — verify heading text is present
+    for tag in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+        if tag.find_parent(["header", "footer", "aside"]):
+            continue
+        text = tag.get_text(strip=True)
+        if text and len(text) >= 3:
+            tests.append({
+                "id": f"{pdf_name}_p{page}_fmt_{uuid.uuid4().hex[:8]}",
+                "type": "formatting",
+                "pdf": f"{pdf_name}.pdf",
+                "page": page,
+                "text": text,
+                "format_type": f"heading_{tag.name}",
+            })
+
+    return tests
+
+
 # ---------------------------------------------------------------------------
 # Process HTML Files
 # ---------------------------------------------------------------------------
@@ -254,6 +368,8 @@ def process_html_file(html_path: str, seed: int = 42) -> list:
     tests.extend(extract_text_absence_tests(soup, pdf_name, page))
     tests.extend(extract_table_tests(soup, pdf_name, page, rng))
     tests.extend(extract_order_tests(soup, pdf_name, page, rng))
+    tests.extend(extract_math_tests(soup, pdf_name, page))
+    tests.extend(extract_formatting_tests(soup, pdf_name, page, rng))
 
     return tests
 

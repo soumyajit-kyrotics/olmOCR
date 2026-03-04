@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import asyncio
+import glob
 import os
 import sys
 import time
@@ -41,10 +42,12 @@ def main():
     parser.add_argument("--api-key", help="API key (or set OPENROUTER_API_KEY). Use 'none' for local vLLM.")
     parser.add_argument("--api-url", default="https://openrouter.ai/api/v1/chat/completions",
                         help="API endpoint URL (default: OpenRouter)")
-    parser.add_argument("--model", default="qwen/qwen-2.5-vl-7b-instruct",
-                        help="Model name (default: qwen/qwen-2.5-vl-7b-instruct)")
+    parser.add_argument("--model", default="qwen/qwen3-vl-235b-a22b-thinking",
+                        help="Model name (default: qwen/qwen3-vl-235b-a22b-thinking)")
     parser.add_argument("--skip-render", action="store_true", help="Skip HTML rendering step")
     parser.add_argument("--skip-tests", action="store_true", help="Skip test extraction step")
+    parser.add_argument("--workers", type=int, default=5,
+                        help="Parallel workers per PDF (default: 5). Each worker makes one API call.")
     args = parser.parse_args()
 
     load_dotenv()
@@ -72,15 +75,18 @@ def main():
 
     from synth.generate_html import process_pdf
 
-    pdf_files = sorted([
-        os.path.join(args.pdf_dir, f)
-        for f in os.listdir(args.pdf_dir)
-        if f.lower().endswith(".pdf")
-    ])
+    # Recursively discover all PDFs under --pdf-dir (including subdirectories)
+    pdf_files = sorted(glob.glob(
+        os.path.join(args.pdf_dir, "**", "*.pdf"), recursive=True
+    ))
+    # Also pick up PDFs directly in the top-level dir (non-recursive glob misses none)
+    pdf_files = sorted(set(pdf_files))  # deduplicate, keep sorted
 
     if not pdf_files:
-        print(f"No PDFs found in {args.pdf_dir}")
+        print(f"No PDFs found under {args.pdf_dir} (searched recursively)")
         sys.exit(1)
+
+    print(f"Found {len(pdf_files)} PDF(s) under {args.pdf_dir}")
 
     total_pages = 0
     for pdf_path in pdf_files:
@@ -90,6 +96,7 @@ def main():
         results = process_pdf(
             pdf_path, api_key, args.output_dir, args.max_dim,
             api_url=args.api_url, model=args.model,
+            workers=args.workers,
         )
         total_pages += len(results)
 

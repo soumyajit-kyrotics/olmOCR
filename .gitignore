@@ -13,6 +13,7 @@ output/
 images/
 train.jsonl
 synth_output/
+scratch/
 
 # PDF data (large files)
 data/
